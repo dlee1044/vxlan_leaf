@@ -1,0 +1,21 @@
+{% for item in tenants %}
+{% if item.l3vni is defined %}
+{% if l3_vxlans is defined %}
+route-map {{ item.name }}-REDIST-CONNECTED permit 10
+  match tag 65333
+{#    {% for svi in l3_vxlans %}
+      {% if svi.vrf is defined %}
+        {% if item.name == svi.vrf %}
+          match interface vlan{{ svi.vlan_id }}
+        {% endif %}
+      {% endif %}
+    {%  endfor %}
+#}
+route-map {{ item.name }}-REDIST-CONNECTED deny 999
+route-map {{ item.name }}-REDIST-STATIC permit 10
+  match tag 65333
+route-map {{ item.name }}-REDIST-STATIC deny 999
+{% endif %}
+{% endif %}
+{% endfor %}
+

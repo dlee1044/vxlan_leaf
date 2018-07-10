@@ -1,0 +1,22 @@
+
+interface {{ item.vtep_intf }}
+  no member vni {{ item.vn_segment }} associate-vrf
+
+no vlan {{ item.vlan_id }}
+
+no interface Vlan {{ item.vlan_id }}
+
+router bgp {{ bgp_asn }}
+  no vrf {{ item.vrf }}
+
+evpn
+  no vni {{ item.vn_segment }} l2
+
+vrf context {{ item.vrf }}
+  no vni {{ item.vn_segment }}
+  no address-family ipv4 unicast
+    route-target import {{ item.vn_segment }}:{{ item.vlan_id }}
+    route-target export {{ item.vn_segment }}:{{ item.vlan_id }}
+    route-target both {{ item.vn_segment }}:{{ item.vlan_id }} evpn
+  no rd {{ item.rd }}
+

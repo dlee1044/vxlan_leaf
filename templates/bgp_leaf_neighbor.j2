@@ -1,0 +1,4 @@
+router bgp {{ bgp_asn }}
+  neighbor {{ item.neighbor }}
+    inherit peer SPINE
+    remote-as {{ item.remote_as }}

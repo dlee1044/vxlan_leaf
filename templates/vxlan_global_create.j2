@@ -1,0 +1,26 @@
+interface vlan{{ item.vlan_id }}
+  fabric forwarding mode anycast-gateway
+  no shutdown
+  no ip redirects
+  {% if item.vrf is defined %}
+  vrf member {{ item.vrf }}
+  {% endif %}
+  fabric forwarding mode anycast-gateway
+  description {{ item.name }}
+  ip address {{ item.addr | ipaddr('net') | ipaddr('1') }} tag {{bgp_asn}}
+
+vlan {{ item.vlan_id }}
+  name {{ item.name }}
+  vn-segment {{ item.vn_segment }}
+
+interface {{ item.vtep_intf }}
+  no shut
+  member vni {{ item.vn_segment }}
+    suppress-arp
+    ingress-replication protocol bgp
+
+  evpn
+  vni {{ item.vn_segment }} l2
+    rd auto
+    route-target both auto
+

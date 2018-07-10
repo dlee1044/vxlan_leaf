@@ -1,0 +1,25 @@
+
+vlan {{ item.vlan_id }}
+  name {{ item.name }}
+  vn-segment {{ item.vn_segment }}
+
+interface {{ item.vtep_intf }}
+  source-interface loopback1
+  host-reachability protocol bgp
+  no shutdown
+  member vni {{ item.vn_segment }}
+    suppress-arp
+    ingress-replication protocol bgp
+
+interface vlan {{ item.vlan_id }}
+  fabric forwarding mode anycast-gateway
+  no shutdown
+  no ip redirects
+  ip address {{ item.addr }}/{{ item.mask }} tag {{bgp_asn}}
+
+evpn
+  vni {{ item.vn_segment }} l2
+    rd {{ item.rd }}
+    route-target import {{ item.vn_segment }}:{{ item.vlan_id }}
+    route-target export {{ item.vn_segment }}:{{ item.vlan_id }}
+

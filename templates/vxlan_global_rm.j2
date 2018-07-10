@@ -1,0 +1,9 @@
+evpn
+  no vni {{ item.vn_segment }} l2
+
+interface {{ item.vtep_intf }}
+  no member vni {{ item.vn_segment }}
+
+no interface vlan {{ item.vlan_id }}
+
+no vlan {{ item.vlan_id }}

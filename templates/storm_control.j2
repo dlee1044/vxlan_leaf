@@ -1,0 +1,6 @@
+interface {{ item.interface }}
+  spanning-tree bpduguard enable
+  storm-control broadcast level 1.00
+  storm-control multicast level 1.00
+  storm-control action trap
+  storm-control action shutdown

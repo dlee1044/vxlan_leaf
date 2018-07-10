@@ -1,0 +1,882 @@
+#
+# Generic Leaf Playbook
+# Peter Shuleski
+# peter.shuleski@t-mobile.com
+#
+
+    - name: collect output from nxos device
+      nxos_command:
+        commands:
+          - show version
+        provider: "{{ nxos_cli }}"
+      register: output
+
+    - name: Set hostname fact
+      set_fact:
+        running_hostname: "{{ output.stdout[0] | regex_findall('\\s+Device name:\\s+(\\S+)') | first }}"
+
+    - name: Set SerialNo fact
+      set_fact:
+        running_serial: "{{ output.stdout[0] | regex_findall('\\s+Processor Board ID\\s+(\\S+)') | first }}"
+
+    - debug:
+        msg:
+          - "Running: {{ running_serial }}"
+          - "Configured: {{ SerialNo }}"
+          - "Running Hostname: {{ running_hostname }}"
+          - "Configured Hostname: {{ hostname }}"
+
+    - assert:
+        that:
+          - running_serial  == "{{ SerialNo }}"
+        msg: "Device Serial Number doesnt Match!  Running: {{ running_serial }} Configured: {{ SerialNo }}"
+
+    - assert:
+        that:
+          - running_hostname == "{{ hostname }}"
+        msg: "Device hostname doesnt Match config! Running: {{ running_hostname }} Configured: {{ hostname }}"
+
+    - name: Set SW version fact
+      set_fact:
+        running_sw_version: "{{ output.stdout[0] | regex_findall('\\s+System version:\\s+(\\S+)') | first }}"
+
+    - name: Backing up Config
+      nxos_config:
+       backup: yes
+       provider: "{{ nxos_cli }}"
+
+#    - name: Check Software Consistency
+#      nxos_file_copy:
+#        file_system:  bootflash:/
+#        local_file: /tftpboot/file.bin
+#        use_ssl: yes
+#        validate_certs: no
+##        provider: "{{ nxos_cli }}"
+#        debug:
+#          msg: "Upgrading Software"
+#      when: running_sw_version != sw_version
+
+#    - name: Generate POAP config
+#      nxos_config:
+#       provider: "{{ nxos_provider }}"
+#      with_items:
+#       - " {{ mgmt }}
+
+#    - name: SET MGMT VRF
+#      nxos_vrf_interface:
+#        interface: "{{ item.interface }}"
+#        vrf: "{{ item.vrf }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ mgmt }}"
+
+#    - name: SET MGMT INT IP
+#      nxos_ip_interface:
+#        interface: "{{ item.interface }}"
+#        addr: "{{ item.addr }}"
+#        mask: "{{ item.mask }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ mgmt }}"
+
+#    - name: SET MGMT Route
+#       nxos_static_route:
+#         prefix: "0.0.0.0/0"
+#         next_hop: "{{ item.gateway}}
+#         route_name: management_dgw
+#         vrf: "{{ item.vrf }}
+#       with_items: "{{ mgmt }}"
+
+    - name: Enable NXAPI
+      nxos_nxapi:
+        state: present
+        https: yes
+        https_port: 443
+        http: no
+        http_port : 80
+        provider: "{{ nxos_cli }}"
+
+    - name: ENABLE NECESSARY FEATURES
+      nxos_feature:
+        feature: "{{ item.feature }}"
+        provider: "{{ nxos_provider }}"
+        state: "{{ item.state }}"
+      with_items: "{{ features }}"
+
+    - name: SET Banner
+      nxos_banner:
+        banner: motd
+        text: "{{ banner }}"
+        state: present
+        provider: "{{ nxos_cli }}"
+
+    - name: ENABLE NV OVERLAY EVPN
+      nxos_evpn_global:
+        nv_overlay_evpn: true
+        provider: "{{ nxos_provider }}"
+
+    - name: Assign Anycast GW
+      nxos_config:
+        lines:
+          - 'fabric forwarding anycast-gateway-mac DEAD.BEEF.CAFE'
+        provider: "{{ nxos_provider }}"
+
+    - name: SET DOMAIN NAME
+      nxos_config:
+        lines:
+          - 'ip domain-name {{ domain }}'
+        provider: "{{ nxos_provider }}"
+
+    - name: DNS SERVER HOST CONFIGURATION
+      nxos_config:
+        lines: ['ip name-server {{ item.server }} use-vrf {{ item.vrf }}']
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ name_servers }}"
+
+    - name: set system MTU
+      nxos_system:
+       system_mtu: 9216
+       provider: "{{ nxos_provider }}"
+
+    - name: Set Timezone
+      nxos_config:
+        lines:
+          - 'clock timezone {{ timezone }}'
+        provider: "{{ nxos_provider }}"
+
+    - name: Create NTP ACLs
+      nxos_acl:
+        name: "{{ item.name }}"
+        seq: "{{ item.seq }}"
+        action: "{{ item.action }}"
+        proto: "{{ item.proto }}"
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ acls }}"
+      when: item.name == "ntp-peer" or item.name == "ntp-serve-query"
+
+    - name: set NTP config
+      nxos_ntp:
+        server: "{{ item.server }}"
+        source_int: "{{ mgmt.0.interface }}"
+        state: "{{ item.state }}"
+        vrf_name: "{{ mgmt.0.vrf }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ ntp_servers }}"
+
+    - name: Set NTP ACL
+      nxos_config:
+        lines:
+          - 'ntp access-group peer ntp-peer'
+          - 'ntp access-group serve ntp-serve-query'
+          - 'ntp access-group query-only ntp-serve-query'
+        provider: "{{ nxos_provider }}"
+      ignore_errors: True
+
+    - name: Logging Configuration
+      nxos_config:
+        lines:
+          - 'logging server {{ item.server }} {{ item.log_level }} use-vrf {{ item.vrf }} facility {{ item.facility }}'
+          - 'logging source-interface {{ item.source }}'
+          - 'no logging console'
+          - 'logging event trunk-status enable'
+          - 'logging event link-status default'
+          - 'logging level ethpm link-up error'
+          - 'logging level ethpm link-down error'
+          - 'logging timestamp milliseconds'
+          - 'logging event trunk-status enable'
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ logging }}"
+
+    - name: IP dhcp relay
+      nxos_config:
+        lines:
+          - 'ip dhcp relay'
+          - 'ip dhcp relay information option'
+          - 'ip dhcp relay information option vpn'
+          - 'ipv6 dhcp relay'
+        provider: "{{ nxos_provider }}"
+
+    - name: Ensure snmp contact is configured
+      nxos_snmp_contact:
+        contact: "{{ contact }}"
+        state: present
+        provider: "{{ nxos_provider }}"
+
+    - name: Ensure snmp location is configured
+      nxos_snmp_location:
+        location: "{{ location }}"
+        state: present
+        provider: "{{ nxos_provider }}"
+
+    - name: Create SNMP ACLs
+      nxos_acl:
+        state: "{{ item.state }}"
+        name: "{{ item.name }}"
+        seq: "{{ item.seq }}"
+        action: "{{ item.action }}"
+        proto: "{{ item.proto }}"
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ acls }}"
+      when: item.proto == "ip" and item.src_port1 is undefined
+
+    - name: Create SSH ACLs
+      nxos_acl:
+        state: "{{ item.state }}"
+        name: "{{ item.name }}"
+        seq: "{{ item.seq }}"
+        action: "{{ item.action }}"
+        proto: "{{ item.proto }}"
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        dest_port1: "{{ item.dest_port1 }}"
+        dest_port_op: "{{ item.dest_port_op }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ acls }}"
+      when: item.name == "ssh-only" and item.src_port1 is undefined
+
+    - name: Create SNMP RO Community
+      nxos_snmp_community:
+        group: network-operator
+        acl: SNMP-RO-NMNET
+        community: Re4D0nLy5TrInG
+        state: present
+        provider: "{{ nxos_cli }}"
+
+    - name: Create SNMP Hosts
+      nxos_snmp_host:
+        community: "{{ item.community }}"
+        snmp_host: "{{ item.server }}"
+        snmp_type: trap
+        vrf: "{{ item.vrf }}"
+        state: "{{ item.state }}"
+        src_intf: mgmt0
+        provider: "{{ nxos_provider }}"
+      with_items: "{{ snmp_hosts }}"
+
+    - name: Create SNMP Traps
+      nxos_snmp_traps:
+        group: "{{ item.group }}"
+        state: "{{ item.state }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ snmp_traps }}"
+
+## Configure Spanning-tree
+    - name: Configure MST
+      nxos_config:
+        src: mst_config.j2
+        provider: "{{ nxos_provider }}"
+
+    - name: Configure Spanning-tree Pathcost
+      nxos_config:
+        lines:
+          - 'spanning-tree pathcost method long'
+        provider: "{{ nxos_cli }}"
+
+    - name: Configure default L2 port types
+      nxos_config:
+        lines:
+          - 'spanning-tree port type edge default'
+          - 'spanning-tree port type edge bpduguard default'
+        provider: "{{ nxos_cli }}"
+
+    - name: Misc config
+      nxos_config:
+        lines:
+          - 'no logging console'
+          - 'errdisable recovery cause bpduguard'
+          - 'errdisable recovery cause link-flap'
+          - 'snmp-server enable traps upgrade UpgradeOpNotifyOnCompletion'
+          - 'snmp-server enable traps upgrade UpgradeJobStatusNotify'
+          - 'snmp-server enable traps bgp'
+          - 'ip arp timeout 3600'
+          - 'mac address-table aging-time 3800'
+          - 'ip dhcp relay'
+          - 'system vlan long-name'
+        provider: "{{ nxos_cli }}"
+
+    - name: SNMP User setup
+      nxos_config:
+        lines:
+          - 'snmp-server user ops network-admin auth md5 0x5ddce125edb49b75149b1e91798d9917 priv 0x5ddce125edb49b75149b1e91798d9917 localizedkey'
+        provider: "{{ nxos_cli }}"
+
+
+    - name: Copy CoPP policy
+      nxos_config:
+        lines:
+          - 'copp copy profile strict suffix custom'
+        timeout: 25
+        provider: "{{ nxos_provider }}"
+
+    - name: Modify class copp-class-management-custom
+      nxos_config:
+        lines:
+          - 'set cos 2'
+          - 'police cir 0 bps bc 0 bytes conform transmit violate drop'
+        parents:
+          - "policy-map type control-plane copp-policy-strict-custom"
+          - "class copp-class-management-custom"
+        provider: "{{ nxos_provider }}"
+
+#    - name: Set new CoPP policy
+#      nxos_config:
+#        lines:
+#          - 'service-policy input copp-policy-strict-custom'
+#        timeout: 25
+#        parents:
+#          - 'control-plane'
+#        provider: "{{ nxos_cli }}"
+
+    - name: Set CLI aliases
+      nxos_config:
+        src: cli_aliases.j2
+        provider: "{{ nxos_provider }}"
+
+#config vty/console settings
+    - name: Set console timeout
+      nxos_config:
+        lines:
+          - 'exec-timeout 15'
+        parents: 'line console'
+        provider: "{{ nxos_provider }}"
+
+    - name: Set vty timeout
+      nxos_config:
+        lines:
+          - 'exec-timeout 15'
+          - 'access-class ssh-only in'
+        parents: 'line vty'
+        provider: "{{ nxos_provider }}"
+
+# Create RBAC Roles
+    - name: Create RBAC Roles
+      nxos_config:
+        src: RBAC_roles.j2
+        provider: "{{ nxos_provider }}"
+
+    - name: Set default BFD timers
+      nxos_config:
+        lines:
+          - 'bfd interval 250 min_rx 250 multiplier 3'
+        provider: "{{ nxos_provider }}"
+
+############################################## end base config ############################
+
+    - name: set system vlan nve-overlay range
+      nxos_config:
+        lines:
+          - "system vlan nve-overlay id {{ l3vni_range }}"
+        provider: "{{ nxos_provider }}"
+
+    - name: Create VRFs
+      nxos_config:
+        src: vrf_config.j2
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ tenants }}"
+      when: item.l3vni is defined
+
+    - name: Create VXLAN route-maps
+      nxos_config:
+        src: vxlan_route-map.j2
+        provider: "{{ nxos_cli }}"
+
+#    - name: Advertise Global VLAN Networks
+#      nxos_config:
+#        lines:
+#          -  "match interface vlan{{ item.1.vlan_id }}"
+#        before: 'route-map {{ item.0.name }}-REDIST-CONNECTED permit 10'
+#        after: 'route-map {{ item.0.name }}-REDIST-CONNECTED deny 999'
+#        provider: "{{ nxos_provider }}"
+#      with_nested:
+#        - "{{ tenants }}"
+#        - "{{ l3_vxlans }}"
+#      when: item.1.vrf == item.0.name
+
+# Missing templates, bfd, and other.  Using templates for now
+#    - name: Create/Ensure BGP Process
+#      nxos_bgp:
+#        asn: "{{ bgp_asn }}"
+#        router_id: "{{ bgp_router_id }}"
+#        state: present
+#        log_neighbor_changes: true
+#        graceful_restart: true
+#        fast_external_fallover: true
+#        provider: "{{ nxos_provider }}"
+
+#    - name: Create/Ensure BGP IPv4 AFI/SAFI support
+#      nxos_bgp_af:
+#        asn: "{{ bgp_asn }}"
+#        vrf: default
+#        afi: ipv4
+#        safi: unicast
+#        maximum_paths: 8
+#        maximum_paths_ibgp: 8
+#        redistribute: ['direct', 'BGP-REDIST-CONNECTED']
+#        additional_paths_send: true
+#        additional_paths_receive: true
+#        state: present
+#        provider: "{{ nxos_provider }}"
+
+#    - name: Create/Ensure BGP IPv6 AFI/SAFI support
+#      nxos_bgp_af:
+#        asn: "{{ bgp_asn }}"
+#        vrf: default
+#        afi: ipv4
+#        safi: unicast
+#        maximum_paths: 8
+#        maximum_paths_ibgp: 8
+#        redistribute: ['direct', 'BGP-REDIST-CONNECTED']
+#        additional_paths_send: true
+#        additional_paths_receive: true
+#        state: present
+#        provider: "{{ nxos_provider }}"
+
+#    - name: Create/Ensure BGP EVPN support
+#      nxos_bgp_af:
+#        asn: "{{ bgp_asn }}"
+#        vrf: default
+#        afi: l2vpn
+#        safi: evpn
+#        state: present
+#        provider: "{{ nxos_provider }}"
+
+#    - name: BGP neighbor config
+#      nxos_bgp_neighbor:
+#        asn: "{{ bgp_asn }}"
+#        remote_as: "{{ item.remote_as }}"
+#        neighbor: "{{ item.neighbor }}"
+#        #description: "just a description"
+#        state: present
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ bgp_neighbors }}"
+
+#    - name: Configure BGP neighbor IPv4
+#      nxos_bgp_neighbor_af:
+#        asn: "{{ bgp_asn }}"
+#        neighbor: "{{ item.neighbor }}"
+#        afi: ipv4
+#        safi: unicast
+#        allowas_in: true
+#        allowas_in_max: 1
+#        max_prefix_limit: 5000
+#        max_prefix_threshold: 75
+#        max_prefix_warning: true
+#        additional_paths_receive: enable
+#        additional_paths_send: enable
+#        send_community: extended
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ bgp_neighbors }}"
+
+#    - name: Configure BGP neighbor IPv6
+#      nxos_bgp_neighbor_af:
+#        asn: "{{ bgp_asn }}"
+#        neighbor: "{{ item.neighbor }}"
+#        afi: ipv6
+#        safi: unicast
+#        allowas_in: true
+#        allowas_in_max: 1
+#        max_prefix_limit: 5000
+#        max_prefix_threshold: 75
+#        max_prefix_warning: true
+#        additional_paths_receive: enable
+#        additional_paths_send: enable
+#        send_community: extended
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ bgp_neighbors }}"
+
+#    - name: Configure BGP neighbor l2 evpn
+#      nxos_bgp_neighbor_af:
+#        asn: "{{ bgp_asn }}"
+#        neighbor: "{{ item.neighbor }}"
+#        afi: l2vpn
+#        safi: evpn
+#        allowas_in: true
+#        allowas_in_max: 1
+#        max_prefix_limit: 5000
+#        max_prefix_threshold: 75
+#        max_prefix_warning: true
+#        send_community: extended
+#        provider: "{{ nxos_provider }}"
+#      with_items: "{{ bgp_neighbors }}"
+
+    - name: Create/Ensure BGP Process
+      nxos_config:
+        src: bgp_leaf_main.j2
+        provider: "{{ nxos_provider }}"
+
+    - name: BASE NEIGHBOR CONFIG
+      nxos_config:
+       src: bgp_leaf_neighbor.j2
+       provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ bgp_neighbors }}"
+
+##################################### end BGP Config ###########################
+
+#######  Begin IP addressing ###############
+    - name: Configure Server L2 Port-Channels
+      nxos_linkagg:
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+        members: "{{ item.members }}"
+        provider: "{{ nxos_provider }}"
+        force: true
+      with_items: "{{ link_aggs }}"
+      when: item is defined and item.type == "L2"
+
+    - name: Configure L3 Port-channels
+      nxos_linkagg:
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+        members: "{{ item.members }}"
+        force: true
+        provider: "{{ nxos_provider }}"
+      with_items: "{{ link_aggs }}"
+      when: item.type == "L3" and item is defined
+
+    - name: CHANGE INFRA PORTS TO L3
+      nxos_interface:
+        interface: "{{ item.interface }}"
+        mode: layer3
+        description: "{{item.peer_row}}.{{item.peer_rack}}.{{item.peer_ru}}_{{ item.peer_name }}_{{ item.peer_port }}"
+        #admin_state: up
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+      when: item.addr is defined and item.vrf is undefined
+
+    - name: Setup Loopback Interfaces
+      nxos_interface:
+        interface: "{{ item.interface }}"
+        description: "{{ item.description }}"
+        #admin_state: up
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ loopbacks }}"
+
+    - name: setup VRF Loopback Interfaces
+      nxos_vrf_interface:
+        vrf: "{{ item.vrf }}"
+        interface: "{{ item.interface }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ loopbacks }}"
+      when: item.vrf is defined
+
+    - name: Disable ip redirects on L3 interfaces
+      nxos_config:
+        lines:
+          - 'no ip redirects'
+        parents:
+          - 'interface {{ item.interface }}'
+        provider: "{{ nxos_provider }}"
+#      when: item is defined
+      with_items:
+        - "{{ l3_interfaces }}"
+
+    - name: Disable ip unreachables on L3 interfaces
+      nxos_config:
+        lines:
+          - 'no ip unreachables'
+        parents:
+          - 'interface {{ item.interface }}'
+        provider: "{{ nxos_provider }}"
+#      when: item is defined
+      with_items:
+        - "{{ l3_interfaces }}"
+
+    - name: Set MTU on L3 interfaces
+      nxos_config:
+        lines:
+          - mtu {{ item.mtu }}
+        parents: interface {{ item.interface }}
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+      when: item.mtu is defined
+
+    - name: setup VRF L3 interfaces
+      nxos_vrf_interface:
+        vrf: "{{ item.vrf }}"
+        interface: "{{ item.interface }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+      when: item.vrf is defined
+
+    - name: disable bfd echo on L3 interfaces
+      nxos_config:
+        lines:
+          - 'no bfd echo'
+        parents:
+          - "interface {{item.interface}}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+
+    - name: setup dot1q interfaces
+      nxos_config:
+        lines:
+          - 'encapsulation dot1q {{ item.dot1q }}'
+        before: 'interface {{ item.interface }}'
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+      when: item.dot1q is defined
+
+    - name: Address Loopbacks
+      nxos_ip_interface:
+        interface: "{{ item.interface }}"
+        addr: "{{ item.addr | ipaddr('address') }}"
+        mask: "{{ item.addr | ipaddr('prefix') }}"
+        tag: "{{ bgp_asn }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ loopbacks }}"
+      when: item.addr is defined
+
+    #spine is host[0], leaf is host[1]
+    - name: Address IP Infrastructure
+      nxos_ip_interface:
+        interface: "{{ item.interface }}"
+        addr: "{{ item.addr  | ipaddr('net') | ipaddr('1') | ipaddr('address') }}"
+        mask: "{{ item.addr | ipaddr('prefix') }}"
+        tag: "{{ bgp_asn }}"
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_interfaces }}"
+      when: item.addr is defined
+
+
+#    - name: Enable BFD on L3 infra Links
+#      nxos_config:
+#        lines:
+#          - 'bfd neighbor src-ip {{ item.addr | ipaddr('address') }} dest-ip {{  }}"
+
+#nxos_bgp_af broken.  applying networks w/o indepotence in bgp_leaf_main.j3 until working again.
+#    - name: Building underlay network list
+#      set_fact:
+#        underlay_networks: "{{ underlay_networks|default([]) + [[item.addr|ipaddr('network/prefix'),'']] }}"
+#      with_items:
+#        - "{{ l3_interfaces }}"
+#        - "{{ loopbacks }}"
+#      when: item.vrf is undefined
+#      tags: test
+#
+#    - name: print variable
+#      debug:
+#        msg: "{{ underlay_networks }}"
+#      tags: test
+#
+#    - name: Advertise Underlay Prefixes
+#      nxos_bgp_af:
+#        asn: "{{ bgp_asn }}"
+#        afi: ipv4
+#        safi: unicast
+#        vrf: default
+#        networks:
+#          - "{{ underlay_networks }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ l3_interfaces }}"
+#      when: item.vrf is undefined
+#      tags: test
+#end nsos_bgp_af broken
+
+# advertise infra VRF prefixes in BGP VRF
+    - name: Advertise Underlay Infra Prefixes/configure BGP VRFs
+      nxos_config:
+        src: bgp_vrf.j2
+        provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ tenants }}"
+
+## VXLAN Creation/Deletion
+    - name: Create NVE interface
+      nxos_config:
+        lines:
+          - 'source-interface loopback1'
+          - 'host-reachability protocol bgp'
+          #- 'mtu 9216'
+          - 'no shutdown'
+        before: 'interface nve1'
+        provider: "{{ nxos_cli }}"
+
+    - name: configure L3 VXLANs
+      nxos_config:
+       lines:
+        - ' member vni {{ item.l3vni }} associate-vrf'
+       before: 'interface nve1'
+       provider: "{{ nxos_cli }}"
+      with_items:
+        - "{{ tenants }}"
+      when: item.l3vni is defined and item.state  == "present"
+
+    - name: configure VXLANs via template
+      nxos_config:
+       src: vxlan_global_create.j2
+       provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l3_vxlans }}"
+      when: item.state  == "present"
+
+    - name: Configure VXLAN dhcp relays
+      nxos_config:
+       lines:
+        - " ip dhcp relay address {{ item.1 }}"
+       parents:
+        - 'interface vlan{{ item.0.vlan_id }}'
+       provider: "{{ nxos_provider }}"
+      when: item.1 is defined and item.0.state == "present"
+      loop: "{{ query('subelements', l3_vxlans, 'dhcp_relay' ) }}"
+      tags: test
+
+    - name: configure L2 VXLANs via template
+      nxos_config:
+       src: vxlan_l2only_create.j2
+       provider: "{{ nxos_provider }}"
+      with_items:
+        - "{{ l2_vxlans }}"
+      when: item.state  == "present"
+#    - name: Configure Tenant VXLAN VLANs
+#      nxos_vlan:
+#        vlan_id: "{{ item.vlan_id }}"
+#        state: "{{ item.state }}"
+#        admin_state: up
+#        mapped_vni: "{{ item.vn_segment }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ tenant_vxlan }}"
+#      when: item.state == "present"
+
+#    - name: configure vrf VXLANs via template
+#      nxos_config:
+#       src: vxlan_vrf_create.j2
+#       provider: "{{ nxos_provider }}"
+#      with_items:
+#       - "{{ tenant_vxlan }}"
+#      when: item.state  == "present"
+
+#    - name: Delete Unwanted Global VXLANs
+#      nxos_config:
+#       src: vxlan_global_rm.j2
+#       provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ l3_vxlans }}"
+#      when: item.state  == "unconfigured"
+
+#    - name: Delete Unwanted vrf VXLANs
+#      nxos_config:
+#       src: vxlan_vrf_rm.j2
+#       provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ tenant_vxlan }}"
+#      when: item.state  == "unconfigured"
+
+
+
+#############################################################
+# begin native vxlan global block
+#############################################################
+# uncomment all of below to use native nxos vxlan modules when fixed
+#    - name: Configure Global VXLAN VLANs
+#      nxos_vlan:
+#        vlan_id: "{{ item.vlan_id }}"
+#        state: "{{ item.state }}"
+#        admin_state: up
+#        mapped_vni: "{{ item.vn_segment }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ global_vxlan }}"
+#      when: item.state == "present"
+#broken
+#    - name: Configure Global VXLAN evpn
+#      nxos_evpn_vni:
+#        vni: "{{ item.vn_segment }}"
+#        state: "{{ item.state }}"
+#        route_distinguisher: "{{ loopbacks.0.addr }}:{{ item.vn_segment }}"
+#        route_target_import: "{{ item.vn_segment }}:{{ item.vlan_id }}"
+#        route_target_export: "{{ item.vn_segment }}:{{ item.vlan_id }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ global_vxlan }}"
+#      when: item.state == "present"
+
+#broken
+#    - name: Configure Global VXLAN SVI
+#      nxos_interface:
+#        interface: "{{ item.interface }}"
+#        mode: layer3
+#        fabric_forwarding_anycast_gateway: true
+#        #description: "{{ item.name }}"
+#        #admin_state: up
+#        #state: "{{ item.state }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ global_vxlan }}"
+#      #when: item.state == "present"
+
+# works, but tied to broken nxos_interface above
+#    - name: Configure Global VXLAN L3 SVI
+#      nxos_ip_interface:
+#        interface: "{{ item.interface }}"
+#        addr: "{{ item.addr }}"
+#        mask: "{{ item.mask }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#         - "{{ global_vxlan }}"
+
+#broken
+#    - name: Configure VTEP interface
+#      nxos_vxlan_vtep:
+#        interface: nve1
+#        description: "VXLAN default VTEP"
+#        host_reachability: bgp
+#        source_interface: Loopback1
+#        source_interface_hold_down_time: 30
+#        provider: "{{ nxos_provider }}"
+
+#broken
+#    - name: Create VTEP VNI
+#      nxos_vxlan_vtep_vni:
+#        interface: nve1
+#        vni: "{{ item.vn_segment }}"
+#        ingress_replication: bgp
+#        suppress_arp: true
+#        state: "{{ item.state }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ global_vxlan }}"
+#############################################################
+# end vxlan global block
+#############################################################
+
+#    - name: Advertise Global SVI Prefixes
+#      nxos_bgp_af:
+#        asn: "{{ bgp_asn }}"
+#        afi: ipv4
+#        safi: unicast
+#        networks:
+#          - "{{ item.addr | ipaddr('network') }}/{{ item.addr | ipaddr('prefix') }}"
+#        provider: "{{ nxos_provider }}"
+#      with_items:
+#        - "{{ global_vxlan }}"
+
+
+    - name: Apply Storm Control
+      nxos_config:
+        src: storm_control.j2
+        provider: "{{ nxos_cli }}"
+      with_items:
+        - "{{ l2_interfaces }}"
+      when: item is defined and item.state == "present"

@@ -1,0 +1,16 @@
+
+vlan {{ item.vlan_id }}
+  name {{ item.vrf }}_{{ item.name }}_{{ item.vlan_id }}
+  vn-segment 10{{ item.vlan_id }}
+
+interface {{ item.vtep_intf }}
+  no shut
+  member vni 10{{ item.vlan_id }}
+    suppress-arp
+    ingress-replication protocol bgp
+
+  evpn
+  vni 10{{ item.vlan_id }} l2
+    rd auto
+    route-target both auto
+

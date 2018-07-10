@@ -1,0 +1,32 @@
+vrf context {{ item.vrf }}
+  vni {{ item.vn_segment }}
+  rd {{ loopbacks.0.addr | ipaddr('address') }}:{{ item.vn_segment }}
+  address-family ipv4 unicast
+    route-target both auto evpn
+
+interface {{ item.vtep_intf }}
+  source-interface loopback1
+  host-reachability protocol bgp
+  no shutdown
+  member vni {{ item.vn_segment }} associate-vrf
+
+interface vlan{{ item.vlan_id }}
+  vrf member {{ item.vrf }}
+  fabric forwarding mode anycast-gateway
+  no shutdown
+  no ip redirects
+  ip address {{ item.addr | ipaddr('address') }}/{{ item.addr | ipaddr('prefix') }} tag {{bgp_asn}}
+
+router bgp {{ bgp_asn }}
+  vrf {{ item.vrf }}
+    address-family ipv4 unicast
+     advertise l2vpn evpn
+    address-family ipv6 unicast
+     advertise l2vpn evpn
+
+evpn
+  vni {{ item.vn_segment }} l2
+    rd {{ loopbacks.0.addr | ipaddr('address') }}:{{ item.vn_segment }}
+    route-target import {{ item.vn_segment }}:{{ item.vlan_id }}
+    route-target export {{ item.vn_segment }}:{{ item.vlan_id }}
+

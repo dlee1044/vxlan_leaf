@@ -1,0 +1,31 @@
+vrf context {{ item.name }}
+ {% if item.l3vni is defined %}
+  vni {{ item.l3vni }}
+ {% endif %}
+  rd auto
+  {% if item.ipv4 == 1 %}
+  address-family ipv4 unicast
+    route-target both auto
+    {% if item.l3vni is defined %}
+    route-target both auto evpn
+    {% endif %}
+  {% endif %}
+  {% if item.ipv6 == 1 %}
+  address-family ipv6 unicast
+    route-target both auto
+    {% if item.l3vni is defined %}
+    route-target both auto evpn
+    {% endif %}
+  {% endif %}
+
+{% if item.l3vni is defined %}
+  vlan {{ item.l3vni }}
+    name vrf_{{ item.name }}_anchor
+    vn-segment {{ item.l3vni }}
+
+  interface Vlan{{ item.l3vni }}
+    description L3VNI anchor
+    no shutdown
+    vrf member {{ item.name }}
+    ip forward
+{% endif %}

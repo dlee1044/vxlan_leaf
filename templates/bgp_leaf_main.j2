@@ -1,0 +1,56 @@
+route-map LEAF-TO-SPINE-V4 permit 10
+  set ip next-hop unchanged
+route-map LEAF-TO-SPINE-V6 permit 10
+  set ipv6 next-hop unchanged
+
+route-map DEFAULT-REDIST-CONNECTED permit 10
+  match tag 65333
+route-map DEFAULT-REDIST-CONNECTED deny 999
+
+route-map DEFAULT-REDIST-STATIC permit 10
+  match tag 65333
+route-map DEFAULT-REDIST-STATIC deny 999
+
+router bgp {{ bgp_asn }}
+  router-id {{ bgp_router_id }}
+  log-neighbor-changes
+  timers bgp 3 9
+  address-family ipv4 unicast
+    {% for network in l3_interfaces if network.vrf is undefined %}
+    network {{ network.addr|ipaddr('network/prefix') }}
+    {% endfor %}
+    {% for network in loopbacks if network.vrf is undefined %}
+    network {{ network.addr|ipaddr('network/prefix') }}
+    {% endfor %}
+    redistribute direct route-map DEFAULT-REDIST-CONNECTED
+    redistribute static route-map DEFAULT-REDIST-STATIC
+    maximum-paths 6
+    maximum-paths ibgp 6
+    additional-paths send
+    additional-paths receive
+  address-family ipv6 unicast
+    redistribute direct route-map DEFAULT-REDIST-CONNECTED
+    redistribute static route-map DEFAULT-REDIST-STATIC
+    maximum-paths 6
+    maximum-paths ibgp 6
+    additional-paths send
+    additional-paths receive
+  address-family l2vpn evpn
+!
+  template peer SPINE
+    bfd
+    address-family ipv4 unicast
+      allowas-in 1
+      send-community both
+      maximum-prefix 5000 75 warning-only
+      route-map LEAF-TO-SPINE-V4 out
+    address-family ipv6 unicast
+      allowas-in 1
+      send-community both
+      maximum-prefix 5000 75 warning-only
+      route-map LEAF-TO-SPINE-V6 out
+    address-family l2vpn evpn
+      no route-map LEAF-TO-SPINE-EVPN out
+      allowas-in 1
+      send-community both
+      maximum-prefix 5000 75 warning-only

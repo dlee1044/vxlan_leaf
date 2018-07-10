@@ -1,0 +1,24 @@
+router bgp {{ bgp_asn }}
+{% if item.l3vni is defined %}
+  vrf {{ item.name }}
+    address-family ipv4 unicast
+      advertise l2vpn evpn
+    {% for interface in l3_interfaces %}
+     {% if interface.vrf is defined %}
+      {% if interface.vrf is defined and item.name == interface.vrf and interface.addr is defined %}
+        network {{ interface.addr | ipaddr('network') }}/{{ interface.addr | ipaddr('prefix') }}
+      {% endif %}
+     {% endif %}
+    {% endfor %}
+     redistribute direct route-map {{ item.name }}-REDIST-CONNECTED
+     redistribute static route-map {{ item.name }}-REDIST-STATIC
+     address-family ipv6 unicast
+       advertise l2vpn evpn
+    {% for interface in l3_interfaces %}
+     {% if interface.vrf is defined %}
+      {% if item.name == interface.vrf and interface.v6addr is defined %}
+        network {{ interface.v6addr | ipaddr('network') }}/{{ interface.v6addr | ipaddr('prefix') }}
+      {% endif %}
+     {% endif %}
+    {% endfor %}
+{% endif %}
